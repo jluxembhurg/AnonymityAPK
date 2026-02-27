@@ -1,0 +1,11 @@
+__pycache__/
+.venv/
+.env
+data/*.npy
+recordings/
+logs/
+.agent/
+.gemini/
+.DS_Store
+models/
+*.pyc
