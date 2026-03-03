@@ -3,50 +3,69 @@ import numpy as np
 import onnxruntime as ort
 
 class FaceRecognizer:
-    def __init__(self, model_path: str = "models/recognizer.onnx"):
-        self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        self.input_name = self.session.get_inputs()[0].name
+    def __init__(self, original_path: str = "models/recognizer.onnx", 
+                 vlogger_path: str = "models/mobilefacenet.onnx"):
+        # Load Original Model (Spatial/GAP)
+        self.spatial_session = ort.InferenceSession(original_path, providers=['CPUExecutionProvider'])
+        self.spatial_input = self.spatial_session.get_inputs()[0].name
         
-    def preprocess(self, face_img: np.ndarray) -> np.ndarray:
-        """
-        Preprocess the face image for FaceNet.
-        Model expects: 368x368, normalized.
-        """
+        # Load MobileFaceNet (Primary Vlogger Identification)
+        self.vlogger_session = ort.InferenceSession(vlogger_path, providers=['CPUExecutionProvider'])
+        self.vlogger_input = self.vlogger_session.get_inputs()[0].name
+        
+    def preprocess_spatial(self, face_img: np.ndarray) -> np.ndarray:
+        """Original model: 368x368, RGB, NCHW normalization."""
+        face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
         face_img = cv2.resize(face_img, (368, 368))
         face_img = face_img.astype(np.float32)
-        
-        # Standard normalization: (x - 127.5) / 128
         face_img = (face_img - 127.5) / 128.0
-        
-        # Convert to NCHW
         face_img = np.transpose(face_img, (2, 0, 1))
         face_img = np.expand_dims(face_img, axis=0)
         return face_img
 
-    def get_embedding(self, face_img: np.ndarray) -> np.ndarray:
-        """
-        Extract 128D or 512D embedding from a face image.
-        """
-        blob = self.preprocess(face_img)
-        embedding = self.session.run(None, {self.input_name: blob})[0]
-        # Normalize the embedding to unit length
-        norm = np.linalg.norm(embedding)
-        return embedding / norm if norm > 0 else embedding
+    def preprocess_vlogger(self, face_img: np.ndarray) -> np.ndarray:
+        """MobileFaceNet: 112x112, RGB, NHWC normalization."""
+        face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+        face_img = cv2.resize(face_img, (112, 112))
+        face_img = face_img.astype(np.float32)
+        face_img = (face_img - 127.5) / 128.0
+        face_img = np.expand_dims(face_img, axis=0)
+        return face_img
+
+    def get_spatial_embedding(self, face_img: np.ndarray) -> np.ndarray:
+        """Extract spatial GAP descriptor from original model."""
+        blob = self.preprocess_spatial(face_img)
+        output = self.spatial_session.run(None, {self.spatial_input: blob})[0]
+        # GAP pooling
+        embedding = np.mean(output, axis=(2, 3)).flatten()
+        return self._l2_normalize(embedding)
+
+    def get_vlogger_embedding(self, face_img: np.ndarray) -> np.ndarray:
+        """Extract 128D identity vector from MobileFaceNet."""
+        blob = self.preprocess_vlogger(face_img)
+        embedding = self.vlogger_session.run(None, {self.vlogger_input: blob})[0]
+        return self._l2_normalize(embedding.flatten())
+
+    def _l2_normalize(self, x: np.ndarray) -> np.ndarray:
+        norm = np.linalg.norm(x)
+        if norm > 1e-6:
+            return x / norm
+        return x
 
     def calculate_distance(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
-        """
-        Calculate Euclidean distance between two embeddings.
-        """
-        return np.linalg.norm(emb1 - emb2)
+        """Cosine Distance (1 - Cosine Similarity)."""
+        return 1.0 - np.dot(emb1, emb2)
 
-    def is_vlogger(self, emb: np.ndarray, profile_embs: list, threshold: float = 0.70) -> tuple[bool, float]:
-        """
-        Compare identity against vlogger profile.
-        Returns (is_match, best_distance).
-        """
+    def mean_top_k_distance(self, emb: np.ndarray, profile_embs: list, k: int = 3) -> float:
+        if profile_embs is None or len(profile_embs) == 0:
+            return 1.0
+        distances = sorted([self.calculate_distance(emb, p_emb) for p_emb in profile_embs])
+        top_k = distances[:min(k, len(distances))]
+        return sum(top_k) / len(top_k)
+
+    def is_vlogger(self, emb: np.ndarray, profile_embs: list, threshold: float = 0.35) -> tuple[bool, float]:
+        """Verify against vlogger gallery."""
         if profile_embs is None or len(profile_embs) == 0:
             return False, 1.0
-            
-        distances = [self.calculate_distance(emb, p_emb) for p_emb in profile_embs]
-        min_dist = min(distances)
-        return min_dist < threshold, min_dist
+        dist = self.mean_top_k_distance(emb, profile_embs)
+        return dist < threshold, dist

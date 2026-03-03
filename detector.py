@@ -17,7 +17,7 @@ class FaceDetector:
             model_path (str): Path to the YOLOv8 model file.
         """
         # Load the model. Ultralytics handles CPU/ONNX automatically.
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task='detect')
         
         # Bounding box buffer percentage (15% as requested)
         self.buffer_pct = 0.15
