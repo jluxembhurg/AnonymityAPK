@@ -47,7 +47,7 @@ jobs:
             "platforms;android-33" \
             "ndk;25.2.9519653" || true
 
-      # Copy flat .py source modules into the anonymity/ package.
+      # Copy flat .py source modules and resources into the anonymity/ package.
       # This keeps the desktop source files unchanged at root while
       # giving Briefcase a proper package to bundle for Android.
       - name: Prepare anonymity package
@@ -56,6 +56,8 @@ jobs:
                    web_bridge.py gui.py main_android.py main_anonymity.py; do
             cp "$f" "anonymity/$f"
           done
+          # Copy resources (icon, etc)
+          cp -r anonymity/resources anonymity/anonymity/resources || true
           # Copy data and model files needed at runtime
           cp -r models anonymity/models || true
           cp -r data   anonymity/data   || true
@@ -63,11 +65,11 @@ jobs:
 
       # Create the Android Gradle project
       - name: Briefcase Create
-        run: briefcase create android gradle --no-input
+        run: briefcase create android gradle --no-input -v
 
       # Compile the APK
       - name: Briefcase Build
-        run: briefcase build android gradle --no-input
+        run: briefcase build android gradle --no-input -v
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

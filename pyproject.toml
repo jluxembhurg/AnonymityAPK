@@ -10,7 +10,7 @@ license = "Proprietary"
 formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 long_description = "Selectively blurs unrecognized faces in real-time video."
-
+icon = "anonymity/resources/anonymity"
 # Entry point: anonymity/__main__.py
 # CI copies all flat .py modules into anonymity/ before building
 sources = ["anonymity"]
@@ -25,6 +25,8 @@ requires = [
 requires = [
     "numpy",
 ]
+icon = "anonymity/resources/anonymity"
+splash_background_color = "#121212"
 
 # Android SDK / NDK settings
 build_gradle_dependencies = [
