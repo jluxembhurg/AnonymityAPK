@@ -707,7 +707,11 @@ class VloggerGuardApp:
             fx, fy, fw, fh = self.regions["folder_icon"]
             if fx < x < fx+fw and fy < y < fy+fh:
                 print("[UI] Folder Icon Clicked")
-                try: os.startfile(os.path.abspath(self.recordings_dir))
+                try: 
+                    if sys.platform == 'win32':
+                        os.startfile(os.path.abspath(self.recordings_dir))
+                    else:
+                        print(f"[UI] Gallery folder: {os.path.abspath(self.recordings_dir)}")
                 except: pass
                 return
             

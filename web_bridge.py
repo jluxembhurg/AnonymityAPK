@@ -1,6 +1,7 @@
 import cv2
 import socketio
 import asyncio
+import sys
 from fastapi import FastAPI, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -202,7 +203,10 @@ class WebBridge:
             # Natively open the output directory in Windows File Explorer
             output_dir = os.path.abspath("output")
             os.makedirs(output_dir, exist_ok=True)
-            os.startfile(output_dir)
+            if sys.platform == 'win32':
+                os.startfile(output_dir)
+            else:
+                print(f"[WEB] Gallery opened (simulated on {sys.platform}): {output_dir}")
             print("[WEB] Gallery folder opened in OS")
 
     async def emit_status(self):
