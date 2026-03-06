@@ -6,7 +6,7 @@ import threading
 import datetime
 import queue
 import sounddevice as sd
-from scipy.io.wavfile import write as wav_write
+import wave
 import subprocess
 import imageio_ffmpeg
 from typing import Optional, List
@@ -62,10 +62,20 @@ class AudioRecorder(threading.Thread):
         try:
             if self.recording:
                 full_audio = np.concatenate(self.recording, axis=0)
-                wav_write(self.filename, self.samplerate, full_audio)
+                with wave.open(self.filename, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2) # 16-bit
+                    wf.setframerate(self.samplerate)
+                    # Convert float32 to int16
+                    audio_int16 = (full_audio * 32767).astype(np.int16)
+                    wf.writeframes(audio_int16.tobytes())
             else:
                 # Write 1 second of silence
-                wav_write(self.filename, self.samplerate, np.zeros((self.samplerate, 1), dtype=np.float32))
+                with wave.open(self.filename, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(self.samplerate)
+                    wf.writeframes(np.zeros((self.samplerate, 1), dtype=np.int16).tobytes())
         except Exception as e:
             print(f"[AUDIO] Save Error: {e}")
 
