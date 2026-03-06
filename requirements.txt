@@ -1,5 +1,4 @@
 opencv-contrib-python
-onnxruntime
 numpy
 sounddevice
 imageio-ffmpeg

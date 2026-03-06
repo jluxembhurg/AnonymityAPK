@@ -1,18 +1,19 @@
 import cv2
 import numpy as np
-import onnxruntime as ort
 from typing import List, Tuple
 
 class FaceDetector:
     """
-    Wrapper for YOLOv8 face detection using ONNX Runtime directly.
-    Eliminates dependency on the massive 'ultralytics' package.
+    Wrapper for YOLOv8 face detection using OpenCV DNN module.
+    Eliminates dependency on onnxruntime for better Android compatibility.
     """
     
     def __init__(self, model_path: str = "models/detector.onnx"):
-        # Load the model directly with ONNX Runtime
-        self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        self.input_name = self.session.get_inputs()[0].name
+        # Load the model with OpenCV DNN
+        self.net = cv2.dnn.readNetFromONNX(model_path)
+        # Use CPU for Android (standard Buildozer builds)
+        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
         
         # YOLOv8 face model typically expects 640x640
         self.input_width = 640
@@ -22,25 +23,18 @@ class FaceDetector:
         self.buffer_pct = 0.15
         self.conf_threshold = 0.25
 
-    def preprocess(self, frame: np.ndarray) -> np.ndarray:
-        # YOLOv8 expects RGB, 640x640, normalized 0-1, NCHW
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (self.input_width, self.input_height))
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))
-        img = np.expand_dims(img, axis=0)
-        return img
-
     def detect_faces(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         orig_h, orig_w = frame.shape[:2]
-        blob = self.preprocess(frame)
+        
+        # Preprocess: RGB, 640x640, normalized 0-1, NCHW
+        blob = cv2.dnn.blobFromImage(frame, 1/255.0, (self.input_width, self.input_height), swapRB=True, crop=False)
+        self.net.setInput(blob)
         
         # Run inference
-        outputs = self.session.run(None, {self.input_name: blob})[0]
+        outputs = self.net.forward()
         
         # YOLOv8 output: [1, 5, 8400] -> (x, y, w, h, score) for each anchor
         # Note: Depending on the specific export, it might be [1, 5, 8400] or [1, 8400, 5]
-        # We assume [1, 5, 8400] which is common for YOLOv8-face
         if outputs.shape[1] < outputs.shape[2]:
             outputs = outputs[0] # [5, 8400]
         else:
