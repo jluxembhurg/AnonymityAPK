@@ -47,6 +47,11 @@ jobs:
             virtualenv
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
+      - name: Accept Android SDK licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2" "platforms;android-33" || true
+
       - name: Build with Buildozer
         run: |
           buildozer android debug 2>&1
