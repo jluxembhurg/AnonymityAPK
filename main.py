@@ -51,13 +51,23 @@ class AudioRecorder(threading.Thread):
             self.recording.append(indata.copy())
 
     def run(self):
-        with sd.InputStream(samplerate=self.samplerate, channels=1, callback=self.callback):
-            while not self.stopped:
-                sd.sleep(100)
+        try:
+            with sd.InputStream(samplerate=self.samplerate, channels=1, callback=self.callback):
+                while not self.stopped:
+                    sd.sleep(100)
+        except Exception as e:
+            print(f"[AUDIO] InputStream Error: {e}")
         
-        if self.recording:
-            full_audio = np.concatenate(self.recording, axis=0)
-            wav_write(self.filename, self.samplerate, full_audio)
+        # Ensure file is written even if empty/errored to satisfy FFmpeg
+        try:
+            if self.recording:
+                full_audio = np.concatenate(self.recording, axis=0)
+                wav_write(self.filename, self.samplerate, full_audio)
+            else:
+                # Write 1 second of silence
+                wav_write(self.filename, self.samplerate, np.zeros((self.samplerate, 1), dtype=np.float32))
+        except Exception as e:
+            print(f"[AUDIO] Save Error: {e}")
 
     def stop(self):
         self.stopped = True
@@ -82,13 +92,29 @@ class VideoRecorder(threading.Thread):
                 pass 
 
     def run(self):
+        last_frame = None
+        frame_interval = 1.0 / self.fps
+        next_time = time.time()
+        
         while not self.stopped or not self.frame_queue.empty():
-            try:
-                frame = self.frame_queue.get(timeout=0.1)
-                self.writer.write(frame)
-                self.frame_queue.task_done()
-            except queue.Empty:
-                continue
+            current_time = time.time()
+            if current_time >= next_time:
+                try:
+                    # Get latest available frame or reuse last frame (CFR logic)
+                    if not self.frame_queue.empty():
+                        last_frame = self.frame_queue.get_nowait()
+                        self.frame_queue.task_done()
+                    
+                    if last_frame is not None:
+                        self.writer.write(last_frame)
+                    
+                    next_time += frame_interval
+                except Exception as e:
+                    print(f"[VIDEO] Write Error: {e}")
+            else:
+                # Short sleep to prevent CPU spin
+                time.sleep(0.001)
+                
         self.writer.release()
 
     def stop(self):
@@ -98,9 +124,8 @@ class VideoRecorder(threading.Thread):
 class InferenceResult:
     """Thread-safe container for bundled frame and detection results."""
     def __init__(self):
-        self.vlogger_indices = []
-        self.vlogger_boxes = [] # Stores confirmed [x1, y1, x2, y2]
-        self.vlogger_buffer = 0
+        self.vlogger_map = {} # Maps slot_index to face_box
+        self.vlogger_scores = {} # Maps slot_index to integrity_score
         self.lock = threading.Lock()
         # Stores (frame, faces) tuples
         self.sync_queue = queue.Queue(maxsize=1)
@@ -119,45 +144,45 @@ class InferenceResult:
         try: return self.sync_queue.get(timeout=timeout)
         except queue.Empty: return None
 
-    def update_recognition(self, vlogger_indices, vlogger_buffer, vlogger_boxes=None):
-        """Update recognition output for the GUI."""
+    def update_resolution(self, vlogger_map, vlogger_scores):
+        """Update identity resolution output for the GUI."""
         with self.lock:
-            self.vlogger_indices = vlogger_indices
-            self.vlogger_buffer = vlogger_buffer
-            if vlogger_boxes is not None:
-                self.vlogger_boxes = vlogger_boxes
+            self.vlogger_map = vlogger_map.copy()
+            self.vlogger_scores = vlogger_scores.copy()
 
-    def get_recognition(self):
-        """Get the latest recognition results."""
+    def get_resolution(self):
+        """Get the latest resolution results."""
         with self.lock:
-            return self.vlogger_indices, self.vlogger_buffer, self.vlogger_boxes
+            return self.vlogger_map, self.vlogger_scores
 
 class VloggerGuardApp:
     def __init__(self):
         self.detector = FaceDetector()
-        self.recognizer = FaceRecognizer()
+        self.recognizer = FaceRecognizer() # Now using ArcFace V2
         self.gui = VloggerGuardGUI()
-        # Initial guess 1080p, VideoStream now handles set() before thread
         print("[INIT] Starting VideoStream at 1080p...")
         self.vs = VideoStream(width=1920, height=1080).start()
         
-        self.profiles_path = "data/vlogger_profiles.npy"  # Changed to profiles (plural)
-        self.vlogger_galleries = []  # List of profile galleries (max 2)
+        self.profiles_path = "data/vlogger_profiles.npy"
+        self.vlogger_galleries = []  
         self.privacy_enabled = True
         self.state = "STARTUP" 
         
-        # Async Inference
+        # Identity Resolution State
         self.result: InferenceResult = InferenceResult()
         self.stop_inference: bool = False
         self.inference_thread: Optional[threading.Thread] = None
-        self.buffer_max = 30 
+        self.integrity_max = 100
+        self.integrity_threshold = 75 # Threshold to "unblur"
+        
+        # Tracking State (Persistent between loop iterations)
+        self.track_vloggers = {} # Maps profile_index to {"box": box, "score": int, "track_id": int}
         
         # Capture and Quality State
-        self.capture_mode = "VIDEO" # "PHOTO" or "VIDEO"
-        self.target_quality = "720p" # "320p", "720p", "1080p"
+        self.capture_mode = "VIDEO"
+        self.target_quality = "720p"
         self.quality_menu_open = False
         self._last_res = (0, 0)
-        self.stop_inference = False
         self.last_log_time = time.time()
         
         # Recording State
@@ -228,30 +253,54 @@ class VloggerGuardApp:
         np.save(self.profiles_path, np.array(self.vlogger_galleries, dtype=object))
 
     def add_profile(self):
-        """Enroll a new profile (max 2) with retry limit."""
-        if len(self.vlogger_galleries) >= 2:
-            print("Maximum 2 profiles reached!")
-            return False
-        
-        max_attempts = 3
+        """Enroll a new profile with matching detection for profile merging."""
+        max_attempts = 2
         for attempt in range(max_attempts):
             cv2.destroyAllWindows()
             enroll = EnrollmentModule(self.detector, self.recognizer, self.vs, self.gui)
             if enroll.start_enrollment():
-                # Load the newly created single profile and add to galleries
+                # 1. Load the newly captured embeddings
                 if os.path.exists("data/vlogger_profile.npy"):
-                    new_profile = np.load("data/vlogger_profile.npy")
-                    self.vlogger_galleries.append(new_profile)
-                    self.save_profiles()
-                    print(f"Profile {len(self.vlogger_galleries)} added!")
+                    new_embs = list(np.load("data/vlogger_profile.npy", allow_pickle=True))
+                    
+                    # 2. Check for matches in existing profiles
+                    merged = False
+                    # Representative embedding from new set (mean or first few)
+                    sample_emb = new_embs[0]
+                    
+                    for i, existing_profile in enumerate(self.vlogger_galleries):
+                        # Use MobileFaceNet (vlogger) for merge check
+                        existing_vlogger_embs = [p["vlogger"] for p in existing_profile]
+                        match, dist = self.recognizer.is_vlogger(sample_emb["vlogger"], existing_vlogger_embs, threshold=0.40)
+                        if match:
+                            # MERGE: Append new unique/diverse embeddings to existing profile
+                            # For simplicity, we just extend and take a subset if too large
+                            updated_profile = list(existing_profile) + new_embs
+                            # Keep it robust but efficient (max 80 embeddings)
+                            if len(updated_profile) > 80:
+                                updated_profile = updated_profile[-80:]
+                            
+                            self.vlogger_galleries[i] = np.array(updated_profile, dtype=object)
+                            self.save_profiles()
+                            print(f"[IDENTITY] Profile {i+1} merged and strengthened (Dist: {dist:.3f})")
+                            merged = True
+                            break
+                    
+                    if not merged:
+                        if len(self.vlogger_galleries) < 2:
+                            self.vlogger_galleries.append(np.array(new_embs, dtype=object))
+                            self.save_profiles()
+                            print(f"[IDENTITY] New Vlogger Profile Added and Saved (Slot {len(self.vlogger_galleries)})")
+                        else:
+                            print("[WARNING] Max 2 unique vloggers reached. New identity discarded.")
+                    
+                    # Clean up temp file
+                    try: os.remove("data/vlogger_profile.npy")
+                    except: pass
+                    print("[IDENTITY] Enrollment process complete.")
                     return True
             else:
-                print(f"Enrollment attempt {attempt + 1}/{max_attempts} failed.")
-                if attempt < max_attempts - 1:
-                    print("Retrying...")
-                else:
-                    print("Enrollment failed after maximum attempts. Exiting.")
-                    return False
+                print(f"Enrollment attempt {attempt + 1}/{max_attempts} was canceled or failed.")
         return False
 
     def delete_all_profiles(self):
@@ -277,126 +326,170 @@ class VloggerGuardApp:
         return (interWidth * interHeight) / float(areaA + areaB - (interWidth * interHeight))
 
     def inference_loop(self):
-        """Worker thread with per-face persistence scoring (Smoothing)."""
-        # List of {"box": (x1,y1,x2,y2), "score": int, "id": int}
-        tracked_vloggers = [] 
-        next_id = 0
+        """
+        Global Identity Resolution Engine.
+        Handles multi-vlogger consistency, spatial inertia, and strict privacy scoring.
+        """
+        track_states = {} # Stores last known state for each profile slot {idx: {"box": box, "score": int, "missed": int}}
         
         while not self.stop_inference:
             galleries = self.vlogger_galleries
-            if self.state not in ["VLOGGING", "MENU"] or len(galleries) == 0:
-                tracked_vloggers.clear()
+            if self.state not in ["VLOGGING", "MENU"] or not galleries:
+                track_states.clear()
                 time.sleep(0.05)
                 continue
             
-            # FAST RECOVERY: Zero timeout if no vlogger is tracked
-            timeout = 0.001 if (not tracked_vloggers) else 0.05
-            bundle = self.result.get_bundle(timeout=timeout)
+            # Real-time bundle retrieval
+            bundle = self.result.get_bundle(timeout=0.05)
             if bundle is None: continue
             
             frame, faces = bundle
+            h_proc, w_proc = frame.shape[:2]
+            
+            # Current assignments for this frame
+            current_assignments = {} # {face_idx: profile_idx}
+            vlogger_map = {} # {profile_idx: box}
+            vlogger_scores = {} # {profile_idx: score}
+
             if not faces:
-                for tv in tracked_vloggers: tv["score"] = max(0, tv["score"] - 2)
-                tracked_vloggers = [tv for tv in tracked_vloggers if tv["score"] > 0]
-                self.result.update_recognition([], 0)
+                # Decay existing scores
+                for idx in list(track_states.keys()):
+                    track_states[idx]["score"] = max(0, track_states[idx]["score"] - 5)
+                    track_states[idx]["missed"] += 1
+                    if track_states[idx]["score"] == 0 and track_states[idx]["missed"] > 30:
+                        del track_states[idx]
+                self.result.update_resolution({}, {})
                 continue
 
-            vlogger_indices = []
-            matched_faces = set()
+            # 1. Distance Matrix Construction (Faces vs Profiles)
+            # matrix[face_idx][profile_idx] = distance
+            dist_matrix = []
+            face_embeddings = []
             
-            # 1. Match current faces to existing tracked vloggers (IoU)
             for face_idx, face_box in enumerate(faces):
-                # 1. Update existing trackers using IoU (Maintenance Mode)
-                best_iou = 0
-                best_tv = None
-                for tv in tracked_vloggers:
-                    iou = self.calculate_iou(tv["box"], face_box)
-                    # Relaxed maintenance (0.95) once already tracked
-                    if iou > 0.4 and iou > best_iou:
-                        best_iou = iou
-                        best_tv = tv
+                # 1.1 Distance Filter: Ignore very small faces (far away)
+                f_h = face_box[3] - face_box[1]
+                if f_h < (h_proc * 0.05):
+                    face_embeddings.append(None)
+                    dist_matrix.append([1.0] * len(galleries))
+                    continue
 
-                if best_tv:
-                    matched_faces.add(face_idx)
-                    best_tv["box"] = face_box
-                    
-                    # Periodic verification for stability if trust is low
-                    if best_tv["score"] < self.buffer_max // 2:
-                        x1, y1, x2, y2 = face_box
-                        face_roi = frame[y1:y2, x1:x2]
-                        if face_roi.size > 0:
-                            emb = self.recognizer.get_embedding(face_roi)
-                            # Check against all vlogger profiles (Corrected list iteration)
-                            is_v = False
-                            min_d = 1.0
-                            for profile_embs in galleries:
-                                match, d = self.recognizer.is_vlogger(emb, profile_embs, threshold=0.95)
-                                if match:
-                                    is_v = True
-                                    min_d = min(min_d, d)
-                            
-                            if is_v: best_tv["score"] = min(self.buffer_max, best_tv["score"] + 8)
-                            else: best_tv["score"] = max(0, best_tv["score"] - 4)
-                    else:
-                        # Natural "stickiness" while moving
-                        best_tv["score"] = min(self.buffer_max, best_tv["score"] + 1)
-            
-            # 2. Check unmatched faces for NEW vloggers (Aggressive Search)
-            unmatched_face_data = []
-            for face_idx, face_box in enumerate(faces):
-                if face_idx not in matched_faces:
-                    area = (face_box[2]-face_box[0]) * (face_box[3]-face_box[1])
-                    unmatched_face_data.append((face_idx, face_box, area))
-            
-            unmatched_face_data.sort(key=lambda x: x[2], reverse=True)
-
-            # If no vlogger found yet, check more candidates (up to 4) to "scan fast"
-            scan_limit = 4 if not tracked_vloggers else 2
-            for face_idx, face_box, _ in unmatched_face_data[:scan_limit]:
                 x1, y1, x2, y2 = face_box
-                face_roi = frame[y1:y2, x1:x2]
-                if face_roi.size == 0: continue
-                
-                emb = self.recognizer.get_embedding(face_roi)
-                # Acquisition Mode: Using lenient 0.85 threshold to catch side profiles
-                vlogger_match = False
-                found_dist = 1.0
-                for profile_embs in galleries:
-                    match, d = self.recognizer.is_vlogger(emb, profile_embs, threshold=0.85)
-                    if match:
-                        vlogger_match = True
-                        found_dist = min(found_dist, d)
-                
-                if vlogger_match:
-                    # Score based on match quality: 0.85 threshold -> higher dist = lower initial trust
-                    initial_score = self.buffer_max if found_dist < 0.7 else self.buffer_max // 2
-                    tracked_vloggers.append({"box": face_box, "score": initial_score, "id": next_id})
-                    next_id += 1
-                    matched_faces.add(face_idx)
-                    # If we found the vlogger, stop scanning others this frame to save CPU
-                    break 
+                roi = frame[y1:y2, x1:x2]
+                if roi.size > 0:
+                    # Capture DUAL embeddings
+                    spatial_emb = self.recognizer.get_spatial_embedding(roi)
+                    vlogger_emb = self.recognizer.get_vlogger_embedding(roi)
+                    face_embeddings.append({"spatial": spatial_emb, "vlogger": vlogger_emb})
+                    
+                    dists = []
+                    for g_idx, profile_data in enumerate(galleries):
+                        # 1.2 Dual Distance Logic
+                        # Spatial distance for tracking consistency (Original Model)
+                        spatial_profile = [p["spatial"] for p in profile_data]
+                        d_spatial = self.recognizer.mean_top_k_distance(spatial_emb, spatial_profile, k=3)
+                        
+                        # Vlogger distance for identity confirmation (MobileFaceNet)
+                        vlogger_profile = [p["vlogger"] for p in profile_data]
+                        d_vlogger = self.recognizer.mean_top_k_distance(vlogger_emb, vlogger_profile, k=5)
+                        
+                        # Blend: Spatial gives hint, Vlogger confirms
+                        # We use spatial for the matrix to keep tracking stable
+                        dists.append(d_spatial)
+                    dist_matrix.append(dists)
+                else:
+                    face_embeddings.append(None)
+                    dist_matrix.append([1.0] * len(galleries))
 
-            # 3. Decay unmatched tracked vloggers (Extended memory: 30 frame buffer)
-            active_ids = {tv["id"] for i, tv in enumerate(tracked_vloggers) if any(self.calculate_iou(tv["box"], f) > 0.3 for f in faces)}
-            for tv in tracked_vloggers:
-                if tv["id"] not in active_ids:
-                    tv["score"] = max(0, tv["score"] - 1) # Slow decay (-1) for 30-frame persistence
+            # 2. Global Identity Resolution (Winner-Take-All)
+            # Find best match for each profile slot
+            for p_idx in range(len(galleries)):
+                best_face_idx = -1
+                min_d = 1.0
+                
+                for f_idx in range(len(faces)):
+                    if f_idx in current_assignments: continue
+                    d = dist_matrix[f_idx][p_idx]
+                    
+                    # Spatial Consistency Bonus
+                    if p_idx in track_states:
+                        last_box = track_states[p_idx]["box"]
+                        if self.calculate_iou(last_box, faces[f_idx]) > 0.4:
+                            d -= 0.1 # Priority to spatially consistent faces
+                    
+                    if d < min_d:
+                        min_d = d
+                        best_face_idx = f_idx
+                
+                # Update Tracking State for this Profile
+                if p_idx not in track_states:
+                    track_states[p_idx] = {"box": None, "score": 0, "missed": 0, "active": False, "lock_timer": 0}
+                
+                # Dual Threshold Logic:
+                # - Spatial < 0.45 for general tracking consistency
+                # - Vlogger < 0.35 for strict identity lock (MobileFaceNet)
+                is_match = (best_face_idx != -1 and dist_matrix[best_face_idx][p_idx] < 0.45)
+                
+                if is_match:
+                    current_assignments[best_face_idx] = p_idx
+                    target_box = faces[best_face_idx]
+                    track_states[p_idx]["box"] = target_box
+                    track_states[p_idx]["missed"] = 0
+                    
+                    # Compute Vlogger-specific distance for identity score
+                    v_emb = face_embeddings[best_face_idx]["vlogger"]
+                    v_profile = [p["vlogger"] for p in galleries[p_idx]]
+                    v_dist = self.recognizer.mean_top_k_distance(v_emb, v_profile, k=5)
+                    
+                    # Update Integrity Score with High Momentum based on MobileFaceNet
+                    if v_dist < 0.35: 
+                        track_states[p_idx]["score"] = min(100, track_states[p_idx]["score"] + 30)
+                    elif v_dist < 0.45:
+                        track_states[p_idx]["score"] = min(100, track_states[p_idx]["score"] + 10)
+                    else:
+                        track_states[p_idx]["score"] = max(0, track_states[p_idx]["score"] - 5)
+                else:
+                    # Identity Lost in this frame (Head Tilt or Blur)
+                    # Use very slow decay if we were just locked
+                    decay = 2 if track_states[p_idx]["active"] else 15
+                    track_states[p_idx]["score"] = max(0, track_states[p_idx]["score"] - decay)
+                    track_states[p_idx]["missed"] += 1
+                    
+                    # 2. SPATIAL TRUST (The "Trust Your Eyes" Logic)
+                    # If a face is right where the vlogger was, we trust it 100% for stabilization
+                    if track_states[p_idx]["box"] is not None:
+                        for f_idx, f_box in enumerate(faces):
+                            if f_idx not in current_assignments and self.calculate_iou(track_states[p_idx]["box"], f_box) > 0.65:
+                                current_assignments[f_idx] = p_idx
+                                track_states[p_idx]["box"] = f_box
+                                track_states[p_idx]["missed"] = 0
+                                # Keeps identity alive during fast movement
+                                track_states[p_idx]["score"] = max(1, track_states[p_idx]["score"] - 1)
+                                break
 
-            # 4. Filter and prepare vlogger data for GUI
-            tracked_vloggers = [tv for tv in tracked_vloggers if tv["score"] > 0]
-            
-            final_vlogger_indices = []
-            final_vlogger_boxes = [] # For Shadow Box Tracking
-            max_score = 0
-            for face_idx, face_box in enumerate(faces):
-                for tv in tracked_vloggers:
-                    if self.calculate_iou(tv["box"], face_box) > 0.4:
-                        final_vlogger_indices.append(face_idx)
-                        final_vlogger_boxes.append(face_box)
-                        max_score = max(max_score, tv["score"])
-                        break
-            
-            self.result.update_recognition(final_vlogger_indices, max_score, final_vlogger_boxes)
+                # 3. HYSTERESIS + GRACE PERIOD (Unbreakable Lock)
+                # Once locked, we grant a 90-frame (~3s) Grace Period for total stability
+                if not track_states[p_idx]["active"]:
+                    if track_states[p_idx]["score"] >= 80:
+                        track_states[p_idx]["active"] = True
+                        track_states[p_idx]["lock_timer"] = 90 # 3 Seconds of Shield
+                else:
+                    if track_states[p_idx]["lock_timer"] > 0:
+                        track_states[p_idx]["lock_timer"] -= 1
+                    
+                    # Much slower decay when locked
+                    if best_face_idx == -1: # No direct AI confirmation
+                         track_states[p_idx]["score"] = max(1, track_states[p_idx]["score"] - 1)
+                    
+                    # NEVER blur if inside grace period OR score is decent
+                    if track_states[p_idx]["lock_timer"] <= 0 and track_states[p_idx]["score"] < 25:
+                        track_states[p_idx]["active"] = False
+
+                if track_states[p_idx]["active"] and track_states[p_idx]["box"] is not None:
+                    vlogger_map[p_idx] = track_states[p_idx]["box"]
+                    vlogger_scores[p_idx] = track_states[p_idx]["score"]
+
+            self.result.update_resolution(vlogger_map, vlogger_scores)
 
     def draw_hud(self, frame, face_count, fps):
         h, w = frame.shape[:2]
@@ -508,25 +601,39 @@ class VloggerGuardApp:
         return frame
 
     def mux_video_audio(self, video_path, audio_path, output_path):
-        """Merges video and audio using imageio-ffmpeg."""
-        print(f"Merging flows into {output_path}...")
+        """Merges video and audio using FFmpeg with H.264 encoding."""
+        print(f"Muxing {output_path}...")
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        cmd = [
-            ffmpeg, "-y",
-            "-i", video_path,
-            "-i", audio_path,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-shortest",
-            output_path
-        ]
+        
+        # Check if audio exists, fallback to video only if missing
+        has_audio = os.path.exists(audio_path) and os.path.getsize(audio_path) > 100
+        
+        cmd = [ffmpeg, "-y", "-hide_banner"]
+        cmd += ["-i", video_path]
+        if has_audio:
+            cmd += ["-i", audio_path]
+        
+        # libx264 is much more compatible with Windows players than XVID copy
+        cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-crf", "23"]
+        if has_audio:
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
+        
+        cmd += ["-shortest", output_path]
+        
         try:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.remove(video_path)
-            os.remove(audio_path)
-            print("Video finalized with audio.")
+            # Log errors to file instead of DEVNULL
+            log_file = "logs/ffmpeg_mux.log"
+            with open(log_file, "w") as f:
+                result = subprocess.run(cmd, stdout=f, stderr=f)
+            
+            if result.returncode == 0:
+                if os.path.exists(video_path): os.remove(video_path)
+                if os.path.exists(audio_path): os.remove(audio_path)
+                print(f"Success: {output_path}")
+            else:
+                print(f"Mux Failed (Code {result.returncode}). See {log_file}")
         except Exception as e:
-            print(f"Merge failed: {e}")
+            print(f"Merge Critical Error: {e}")
 
     def toggle_recording(self, frame_size):
         if self.v_recorder is None:
@@ -551,12 +658,12 @@ class VloggerGuardApp:
             self.a_recorder = None
             threading.Thread(target=self.mux_video_audio, args=(v_path, a_path, out_path), daemon=True).start()
 
-    def capture_photo(self, frame):
-        """Saves the current (blurred) frame as a JPEG."""
+    def capture_photo(self, frame_1080p):
+        """Saves the high-resolution 1080p frame (with privacy blur applied)."""
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = os.path.join(self.recordings_dir, f"snap_{ts}.jpg")
-        cv2.imwrite(filename, frame)
-        print(f"Photo saved: {filename}")
+        cv2.imwrite(filename, frame_1080p)
+        print(f"Photo saved (1080p): {filename}")
 
     def handle_clicks(self, click, fps, frame):
         if not click: return
@@ -604,13 +711,7 @@ class VloggerGuardApp:
             if rx < x < rx+rw and ry < y < ry+rh:
                 print("[UI] Record/Snap Clicked")
                 if self.capture_mode == "PHOTO":
-                    ox, oy, vw, vh = self.video_rect
-                    # Safety check for crop
-                    if vh > 0 and vw > 0:
-                        cap_frame = frame[oy:oy+vh, ox:ox+vw] if frame is not None else None
-                    else:
-                        cap_frame = frame
-                    self.capture_photo(cap_frame)
+                    self.capture_photo(frame)
                 else:
                     self.toggle_recording((frame.shape[1], frame.shape[0]))
                 return
@@ -716,99 +817,107 @@ class VloggerGuardApp:
             h_proc, w_proc = frame.shape[:2]
             
             if self.state == "STARTUP":
-                if self.load_profiles(): self.state = "VLOGGING"
-                else: self.state = "ENROLLING"
+                if self.load_profiles(): 
+                    self.state = "VLOGGING"
+                else: 
+                    self.state = "ENROLLING"
+                # Ensure inference loop knows state changed
+                time.sleep(0.1)
             elif self.state == "ENROLLING":
                 if self.add_profile():
                     self.state = "VLOGGING"
+                    print("[STATE] Switched to VLOGGING after successful enrollment.")
                 else:
-                    self.state = "VLOGGING" if len(self.vlogger_galleries) > 0 else "STARTUP"
+                    self.state = "VLOGGING" if self.vlogger_galleries else "STARTUP"
+                    print(f"[STATE] Enrollment failed/canceled. Returning to {self.state}")
+                
+                # Re-establish main window after enrollment process closes its own
                 cv2.namedWindow(self.gui.window_name)
                 cv2.setMouseCallback(self.gui.window_name, self.gui._mouse_callback)
             elif self.state in ["VLOGGING", "MENU"]:
-                # INSTANT DETECTION in main thread (no lag!)
+                # 1. INSTANT DETECTION in main thread (no lag!)
                 faces = self.detector.detect_faces(frame)
                 
-                # Bundled Frame/Face push for perfect sync and zero-lag recovery
+                # 2. Push for background identity resolution
                 self.result.push(frame, faces)
                 
-                # Get recognition results from background thread (including confirmed boxes)
-                v_indices, v_buf, v_boxes = self.result.get_recognition()
+                # 3. Get latest vlogger resolution mapping
+                v_map, v_scores = self.result.get_resolution()
                 
-                # Shadow Box Tracking: Instantly unblur if face matches a confirmed position
-                shadow_vlogger_indices = set(v_indices)
+                # 4. Determine which detected faces are vloggers (Shadow Tracking)
+                # We unblur if a face is EXACTLY a vlogger or has high IoU with a resolved vlogger box
+                vlogger_face_indices = set()
                 for i, face_box in enumerate(faces):
-                    if i in shadow_vlogger_indices: continue
-                    for confirmed_box in v_boxes:
-                        if self.calculate_iou(face_box, confirmed_box) > 0.7:
-                            shadow_vlogger_indices.add(i)
+                    # Check against all resolved vlogger slots
+                    for slot_idx, v_box in v_map.items():
+                        if self.calculate_iou(face_box, v_box) > 0.7:
+                            vlogger_face_indices.add(i)
                             break
 
+                # 5. Apply Privacy Blur
                 if self.privacy_enabled:
                     for i, (x1, y1, x2, y2) in enumerate(faces):
-                        if i not in shadow_vlogger_indices:
+                        if i not in vlogger_face_indices:
                             roi = frame[y1:y2, x1:x2]
                             if roi.size > 0: frame[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (51, 51), 0)
                 
+                # 6. Synchronous Video Recording (CFR)
                 if self.v_recorder is not None:
-                    if fps_counter % int(max(1, fps/30.0)) == 0: self.v_recorder.write(frame)
+                    # Write EVERY frame to maintain 30fps timing relative to the file header
+                    self.v_recorder.write(frame)
                 
-                # 5. Create Display Canvas matching the window
+                # 6. Create Rendering Canvas with safety checks
+                h_proc, w_proc = frame.shape[:2]
+                if win_h < 100 or win_w < 100:
+                    win_w, win_h = 1280, 720
+                
                 canvas = np.zeros((win_h, win_w, 3), dtype=np.uint8)
                 
-                # 2. Scale and center the processed video frame (maintain 16:9)
-                h_proc, w_proc = frame.shape[:2]
-                # The video itself will be 16:9
+                # Letterboxing / Centering Logic
                 v_aspect = 16/9
-                # Calculate maximum size that fits in window while keeping 16:9
                 if win_w / win_h > v_aspect:
-                    # Window is wider than 16:9: height is limiting
                     v_h = win_h
                     v_w = int(v_h * v_aspect)
                 else:
-                    # Window is taller than 16:9: width is limiting
                     v_w = win_w
                     v_h = int(v_w / v_aspect)
                 
-                # Center positions
-                ox = (win_w - v_w) // 2
-                oy = (win_h - v_h) // 2
+                ox, oy = (win_w - v_w) // 2, (win_h - v_h) // 2
                 self.video_rect = (ox, oy, v_w, v_h)
                 
-                # Resize video frame to fit the calculated area
                 resized_video = cv2.resize(frame, (v_w, v_h), interpolation=cv2.INTER_LINEAR)
-                # Place video on canvas
                 canvas[oy:oy+v_h, ox:ox+v_w] = resized_video
                 
-                # 4. Draw Face Labels relative to the CENTERED video
-                scale_x = v_w / w_proc
-                scale_y = v_h / h_proc
+                # 7. Draw Face HUD Elements
+                scale_x, scale_y = v_w / w_proc, v_h / h_proc
                 
                 if self.privacy_enabled:
                     for i, (x1, y1, x2, y2) in enumerate(faces):
-                        # Map processed coords to window-absolute centered video coords
                         dx1, dy1 = int(ox + x1 * scale_x), int(oy + y1 * scale_y)
                         dx2, dy2 = int(ox + x2 * scale_x), int(oy + y2 * scale_y)
                         
-                        if i not in shadow_vlogger_indices:
+                        if i not in vlogger_face_indices:
                             cv2.rectangle(canvas, (dx1, dy1), (dx2, dy2), (0, 0, 255), 1)
                             cv2.putText(canvas, "ANONYMIZED", (dx1, dy1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                         else:
-                            color, l, t = (0, 255, 0), 20, 2
+                            # Premium Corner Brackets for Verified Vlogger
+                            color, l, t = (0, 255, 0), int(20 * scale_y), 2
+                            # Top-Left
                             cv2.line(canvas, (dx1,dy1), (dx1+l,dy1), color, t)
                             cv2.line(canvas, (dx1,dy1), (dx1,dy1+l), color, t)
+                            # Top-Right
                             cv2.line(canvas, (dx2,dy1), (dx2-l,dy1), color, t)
                             cv2.line(canvas, (dx2,dy1), (dx2,dy1+l), color, t)
+                            # Bottom-Left
                             cv2.line(canvas, (dx1,dy2), (dx1+l,dy2), color, t)
                             cv2.line(canvas, (dx1,dy2), (dx1,dy2-l), color, t)
+                            # Bottom-Right
                             cv2.line(canvas, (dx2,dy2), (dx2-l,dy2), color, t)
                             cv2.line(canvas, (dx2,dy2), (dx2,dy2-l), color, t)
                             
-                            is_verified = i in v_indices
-                            lbl = "VLOGGER VERIFIED" if is_verified else "INSTANT RECOGNITION"
-                            cv2.putText(canvas, lbl, (dx1, dy1-15), cv2.FONT_HERSHEY_DUPLEX, 0.5, color, 1)
+                            cv2.putText(canvas, "VLOGGER VERIFIED", (dx1, dy1-15), cv2.FONT_HERSHEY_DUPLEX, 0.5, color, 1)
                 
-                # 5. Draw HUD at the window edges
+                # 8. Draw UI Overlays
                 self.draw_hud(canvas, len(faces), fps)
                 self.draw_record_button(canvas)
                 if self.state == "MENU" or self.quality_menu_open: 
@@ -816,10 +925,10 @@ class VloggerGuardApp:
                 
                 self.gui.show_frame(canvas)
                 
-                # Periodic Logging (Every 1 second)
+                # 9. Performance Logging
                 if time.time() - self.last_log_time > 1.0:
-                    v_verified = len(v_indices)
-                    self.perf_logger.log(len(faces), v_verified, v_buf, self.privacy_enabled)
+                    avg_score = sum(v_scores.values()) / len(v_scores) if v_scores else 0
+                    self.perf_logger.log(len(faces), len(v_scores), avg_score, self.privacy_enabled)
                     self.last_log_time = time.time()
             
             if self.gui.check_exit(): break
