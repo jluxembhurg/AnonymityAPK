@@ -10,6 +10,10 @@ jobs:
     # ubuntu-22.04 is required — ubuntu-24 breaks libffi's autoconf/libtool macros
     runs-on: ubuntu-22.04
 
+    env:
+      # Force Java 17 — runner default JAVA_HOME points to JDK 11 which breaks Gradle
+      JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,13 +41,17 @@ jobs:
             cmake \
             libffi-dev \
             libssl-dev \
+            patch \
             m4
+          # Confirm Java 17 is active
+          java -version
 
       - name: Install Python build tools
         run: |
           pip3 install --user \
             "buildozer==1.5.0" \
             "cython==0.29.37" \
+            "python-for-android==2023.09.16" \
             virtualenv
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 

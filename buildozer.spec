@@ -101,7 +101,7 @@ android.entrypoint = main_android.py
 #android.add_libs_armeabi = libs/android-v7/libgnustl_shared.so
 
 # (str) python-for-android branch to use, defaults to master
-#p4a.branch = master
+p4a.branch = 2023.09.16
 
 # (str) OUYA Console category. Should be one of GAME or APP
 # If you leave this blank, OUYA support will not be enabled
