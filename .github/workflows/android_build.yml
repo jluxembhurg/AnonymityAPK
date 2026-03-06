@@ -7,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 is required — ubuntu-24 breaks libffi's autoconf/libtool macros
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
@@ -18,18 +19,37 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Buildozer dependencies
+      - name: Install system dependencies
         run: |
           sudo apt update
-          sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses-dev libtinfo6 cmake libffi-dev libssl-dev m4 automake
-          pip3 install --user buildozer cython virtualenv
+          sudo apt install -y \
+            git zip unzip \
+            openjdk-17-jdk \
+            python3-pip \
+            autoconf automake \
+            libtool libtool-bin \
+            pkg-config \
+            build-essential \
+            gettext \
+            zlib1g-dev \
+            libncurses-dev \
+            libtinfo6 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            m4
+
+      - name: Install Python build tools
+        run: |
+          pip3 install --user \
+            "buildozer==1.5.0" \
+            "cython==0.29.37" \
+            virtualenv
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Build with Buildozer
         run: |
-          # Buildozer might ask for interactive input; we try to avoid it with --verbose or env vars
-          # In a CI environment, we use 'yes' to accept licenses if needed
-          yes | buildozer android debug
+          buildozer android debug 2>&1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
