@@ -1,0 +1,38 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Buildozer dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          pip3 install --user buildozer
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build with Buildozer
+        run: |
+          # Buildozer might ask for interactive input; we try to avoid it with --verbose or env vars
+          # In a CI environment, we use 'yes' to accept licenses if needed
+          yes | buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: anonymity-apk
+          path: bin/*.apk
