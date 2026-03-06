@@ -9,3 +9,9 @@ logs/
 .DS_Store
 models/
 *.pyc
+anonymity_ui/node_modules/
+anonymity_ui/src/
+anonymity_ui/dist/
+bin/
+.buildozer/
+output/
