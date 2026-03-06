@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK (Briefcase)
 
 on:
   push:
@@ -7,18 +7,20 @@ on:
 
 jobs:
   build:
-    # ubuntu-22.04 is required — ubuntu-24 breaks libffi's autoconf/libtool macros
     runs-on: ubuntu-22.04
-
-    env:
-      # Force Java 17 — runner default JAVA_HOME points to JDK 11 which breaks Gradle
-      JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # Clean Java 17 setup — no apt mess, no JAVA_HOME guessing
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -28,44 +30,47 @@ jobs:
           sudo apt update
           sudo apt install -y \
             git zip unzip \
-            openjdk-17-jdk \
-            python3-pip \
-            autoconf automake \
-            libtool libtool-bin \
-            pkg-config \
             build-essential \
-            gettext \
-            zlib1g-dev \
-            libncurses-dev \
-            libtinfo6 \
-            cmake \
-            libffi-dev \
-            libssl-dev \
-            patch \
-            m4
-          # Confirm Java 17 is active
-          java -version
+            libssl-dev
 
-      - name: Install Python build tools
+      - name: Install Briefcase
         run: |
-          pip3 install --user \
-            "buildozer==1.5.0" \
-            "cython==0.29.37" \
-            "python-for-android==2023.09.16" \
-            virtualenv
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          pip install --upgrade pip
+          pip install "briefcase==0.3.19"
 
+      # Accept all Android SDK licenses before Briefcase runs
       - name: Accept Android SDK licenses
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2" "platforms;android-33" || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "build-tools;33.0.2" \
+            "platforms;android-33" \
+            "ndk;25.2.9519653" || true
 
-      - name: Build with Buildozer
+      # Copy flat .py source modules into the anonymity/ package.
+      # This keeps the desktop source files unchanged at root while
+      # giving Briefcase a proper package to bundle for Android.
+      - name: Prepare anonymity package
         run: |
-          buildozer android debug 2>&1
+          for f in detector.py recognizer.py enrollment.py tracker.py \
+                   web_bridge.py gui.py main_android.py main_anonymity.py; do
+            cp "$f" "anonymity/$f"
+          done
+          # Copy data and model files needed at runtime
+          cp -r models anonymity/models || true
+          cp -r data   anonymity/data   || true
+          cp -r anonymity_ui anonymity/anonymity_ui || true
+
+      # Create the Android Gradle project
+      - name: Briefcase Create
+        run: briefcase create android gradle --no-input
+
+      # Compile the APK
+      - name: Briefcase Build
+        run: briefcase build android gradle --no-input
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: anonymity-apk
-          path: bin/*.apk
+          path: build/anonymity/android/gradle/app/build/outputs/apk/debug/*.apk
