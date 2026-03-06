@@ -31,7 +31,7 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3, kivy, opencv, numpy, fastapi, uvicorn, python-socketio, sounddevice, imageio-ffmpeg, requests, urllib3, chardet, idna, certifi
+requirements = python3, kivy, opencv, numpy, fastapi, uvicorn, python-socketio, requests, urllib3, chardet, idna, certifi
 
 # (str) Custom source folders for requirements
 # packagelist.vendor.dir = ../vendor

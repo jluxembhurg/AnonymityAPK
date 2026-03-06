@@ -5,10 +5,16 @@ import time
 import threading
 import datetime
 import queue
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
 import wave
 import subprocess
-import imageio_ffmpeg
+try:
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
 from typing import Optional, List
 from gui import VideoStream, VloggerGuardGUI
 from detector import FaceDetector
@@ -51,6 +57,9 @@ class AudioRecorder(threading.Thread):
             self.recording.append(indata.copy())
 
     def run(self):
+        if sd is None:
+            print("[AUDIO] sounddevice not available. Skipping recording.")
+            return
         try:
             with sd.InputStream(samplerate=self.samplerate, channels=1, callback=self.callback):
                 while not self.stopped:
