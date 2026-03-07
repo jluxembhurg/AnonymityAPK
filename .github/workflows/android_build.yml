@@ -52,22 +52,29 @@ jobs:
       - name: Prepare anonymity package
         run: |
           mkdir -p src/anonymity/resources
-          # Copy source files
+          # Copy source files from project root
           for f in detector.py recognizer.py enrollment.py tracker.py \
                    web_bridge.py gui.py main_android.py main_anonymity.py; do
-            cp "$f" "src/anonymity/$f"
+            [ -f "$f" ] && cp "$f" "src/anonymity/$f"
           done
-          # Copy resources and package markers
-          cp anonymity/resources/anonymity.png src/anonymity/resources/anonymity.png || true
-          cp anonymity/__init__.py src/anonymity/__init__.py || true
-          cp anonymity/__main__.py src/anonymity/__main__.py || true
           
-          # Copy data and model files needed at runtime
-          cp -r models src/anonymity/models || true
-          cp -r data   src/anonymity/data   || true
-          cp -r anonymity_ui src/anonymity/anonymity_ui || true
+          # Ensure __init__.py and __main__.py are in place
+          [ -f "anonymity/__init__.py" ] && cp anonymity/__init__.py src/anonymity/__init__.py || touch src/anonymity/__init__.py
+          [ -f "anonymity/__main__.py" ] && cp anonymity/__main__.py src/anonymity/__main__.py || true
+          
+          # Copy resources
+          [ -d "anonymity/resources" ] && cp -r anonymity/resources/* src/anonymity/resources/ || true
+          
+          # Copy data and model files
+          [ -d "models" ] && cp -r models src/anonymity/models || true
+          [ -d "data" ] && cp -r data   src/anonymity/data   || true
+          [ -d "anonymity_ui" ] && cp -r anonymity_ui src/anonymity/anonymity_ui || true
 
-          # NOW remove root anonymity dir to avoid conflict with src/anonymity
+          # Debug: show the final structure Briefcase will see
+          echo "Listing src structure:"
+          ls -R src
+          
+          # Final cleanup: remove root anonymity folder to prevent confusion
           rm -rf anonymity
 
       # Create the Android Gradle project
