@@ -2,6 +2,7 @@
 project_name = "Anonymity"
 bundle = "org.vloggerguard"
 version = "0.1.0"
+url = "https://github.com/jluxembhurg/AnonymityAPK"
 author = "VloggerGuard"
 author_email = "dev@vloggerguard.local"
 license = "Proprietary"
@@ -10,13 +11,8 @@ license = "Proprietary"
 formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 long_description = "Selectively blurs unrecognized faces in real-time video."
-icon = "anonymity/resources/anonymity"
-# Entry point: anonymity/__main__.py
-# CI copies all flat .py modules into anonymity/ before building
+icon = "anonymity/resources/anonymity.png"
 sources = ["anonymity"]
-
-# Pure-Python runtime requirements only.
-# opencv-python is bundled as a native .so via the Gradle dependency below.
 requires = [
     "numpy",
 ]
@@ -25,15 +21,15 @@ requires = [
 requires = [
     "numpy",
 ]
-icon = "anonymity/resources/anonymity"
+icon = "anonymity/resources/anonymity.png"
+splash = "anonymity/resources/anonymity.png"
 splash_background_color = "#121212"
 
 # Android SDK / NDK settings
 build_gradle_dependencies = [
-    "org.opencv:opencv:4.9.0",          # OpenCV Android SDK (native)
+    "org.opencv:opencv:4.9.0",
 ]
 
-# Android permissions
 permissions = {
     "android.permission.CAMERA" = "Detect and blur faces in real time",
     "android.permission.INTERNET" = "Serve local WebView UI",
@@ -41,10 +37,3 @@ permissions = {
     "android.permission.READ_EXTERNAL_STORAGE" = "Load vlogger profiles",
     "android.permission.RECORD_AUDIO" = "Record audio",
 }
-
-# Include model files and static data in the app bundle
-sources_include = [
-    "models",
-    "data",
-    "anonymity_ui",
-]
