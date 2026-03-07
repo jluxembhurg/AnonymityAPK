@@ -12,7 +12,7 @@ formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 long_description = "Selectively blurs unrecognized faces in real-time video."
 icon = "src/anonymity/resources/anonymity"
-sources = ["src/anonymity"]
+sources = ["src"]
 requires = [
     "numpy",
 ]
