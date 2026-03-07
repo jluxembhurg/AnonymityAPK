@@ -12,9 +12,7 @@ formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 icon = "src/anonymity/resources/anonymity"
 sources = ["src"]
-requires = [
-    "numpy",
-]
+requires = ["numpy"]
 
 [tool.briefcase.app.anonymity.permission]
 camera = "Detect and blur faces in real time"
@@ -22,20 +20,13 @@ microphone = "Record audio"
 file_system = "Save recordings and load profiles"
 
 [tool.briefcase.app.anonymity.android]
-requires = [
-    "numpy",
-]
+requires = ["numpy"]
 icon = "src/anonymity/resources/anonymity"
 splash = "src/anonymity/resources/anonymity"
 splash_background_color = "#121212"
+build_gradle_dependencies = ["org.opencv:opencv:4.9.0"]
 
-# Android SDK / NDK settings
-build_gradle_dependencies = [
-    "org.opencv:opencv:4.9.0",
-]
-
-# Additional Android-specific permissions
 [tool.briefcase.app.anonymity.android.permission]
-"android.permission.INTERNET" = "Serve local WebView UI"
-"android.permission.WRITE_EXTERNAL_STORAGE" = "Save recordings"
-"android.permission.READ_EXTERNAL_STORAGE" = "Load vlogger profiles"
+"android.permission.INTERNET" = "Connectivity for UI"
+"android.permission.WRITE_EXTERNAL_STORAGE" = "Save video"
+"android.permission.READ_EXTERNAL_STORAGE" = "Load profiles"
