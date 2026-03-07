@@ -52,11 +52,12 @@ jobs:
       - name: Prepare anonymity package
         run: |
           mkdir -p src/anonymity/resources
+          # Copy source files
           for f in detector.py recognizer.py enrollment.py tracker.py \
                    web_bridge.py gui.py main_android.py main_anonymity.py; do
             cp "$f" "src/anonymity/$f"
           done
-          # Copy resources (icon, etc) — already created locally but ensure CI has them
+          # Copy resources and package markers
           cp anonymity/resources/anonymity.png src/anonymity/resources/anonymity.png || true
           cp anonymity/__init__.py src/anonymity/__init__.py || true
           cp anonymity/__main__.py src/anonymity/__main__.py || true
@@ -65,6 +66,9 @@ jobs:
           cp -r models src/anonymity/models || true
           cp -r data   src/anonymity/data   || true
           cp -r anonymity_ui src/anonymity/anonymity_ui || true
+
+          # NOW remove root anonymity dir to avoid conflict with src/anonymity
+          rm -rf anonymity
 
       # Create the Android Gradle project
       - name: Briefcase Create

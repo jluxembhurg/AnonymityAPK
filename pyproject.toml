@@ -10,7 +10,6 @@ license = "Proprietary"
 [tool.briefcase.app.anonymity]
 formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
-long_description = "Selectively blurs unrecognized faces in real-time video."
 icon = "src/anonymity/resources/anonymity"
 sources = ["src"]
 requires = [
@@ -30,10 +29,10 @@ build_gradle_dependencies = [
     "org.opencv:opencv:4.9.0",
 ]
 
-permissions = {
-    "android.permission.CAMERA" = "Detect and blur faces in real time",
-    "android.permission.INTERNET" = "Serve local WebView UI",
-    "android.permission.WRITE_EXTERNAL_STORAGE" = "Save recordings",
-    "android.permission.READ_EXTERNAL_STORAGE" = "Load vlogger profiles",
-    "android.permission.RECORD_AUDIO" = "Record audio",
-}
+permissions = [
+    "android.permission.CAMERA",
+    "android.permission.INTERNET",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.RECORD_AUDIO",
+]
