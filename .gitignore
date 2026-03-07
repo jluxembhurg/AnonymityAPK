@@ -7,11 +7,12 @@ logs/
 .agent/
 .gemini/
 .DS_Store
-models/
+**/models/recognizer.onnx
+**/models/mobilefacenet.onnx
 *.pyc
-anonymity_ui/node_modules/
-anonymity_ui/src/
-anonymity_ui/dist/
+**/node_modules/
+**/dist/
 bin/
 .buildozer/
 output/
+build/
