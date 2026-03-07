@@ -19,7 +19,7 @@ bundle = "org.vloggerguard"
 formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 icon = "src/anonymity/resources/anonymity"
-sources = ["src"]
+sources = ["src/anonymity"]
 
 [tool.briefcase.app.anonymity.android]
 requires = ["numpy"]
