@@ -47,35 +47,12 @@ jobs:
             "platforms;android-33" \
             "ndk;25.2.9519653" || true
 
-      # Copy flat .py source modules and resources into the src/anonymity package.
-      # This follows the standard Briefcase layout (src/app_name).
-      - name: Prepare anonymity package
+      # The repository is now refactored into a standard Briefcase layout
+      # with the 'anonymity/' package at the root.
+      - name: Verify package structure
         run: |
-          mkdir -p src/anonymity/resources
-          # Copy source files from project root
-          for f in detector.py recognizer.py enrollment.py tracker.py \
-                   web_bridge.py gui.py main_android.py main_anonymity.py; do
-            [ -f "$f" ] && cp "$f" "src/anonymity/$f"
-          done
-          
-          # Ensure __init__.py and __main__.py are in place
-          [ -f "anonymity/__init__.py" ] && cp anonymity/__init__.py src/anonymity/__init__.py || touch src/anonymity/__init__.py
-          [ -f "anonymity/__main__.py" ] && cp anonymity/__main__.py src/anonymity/__main__.py || true
-          
-          # Copy resources
-          [ -d "anonymity/resources" ] && cp -r anonymity/resources/* src/anonymity/resources/ || true
-          
-          # Copy data and model files
-          [ -d "models" ] && cp -r models src/anonymity/models || true
-          [ -d "data" ] && cp -r data   src/anonymity/data   || true
-          [ -d "anonymity_ui" ] && cp -r anonymity_ui src/anonymity/anonymity_ui || true
-
-          # Debug: show the final structure Briefcase will see
-          echo "Listing src structure:"
-          ls -R src
-          
-          # Final cleanup: remove root anonymity folder to prevent confusion
-          rm -rf anonymity
+          ls -R anonymity
+          echo "Package structure verified."
 
       # Create the Android Gradle project
       - name: Briefcase Create
