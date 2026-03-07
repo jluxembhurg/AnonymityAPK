@@ -47,21 +47,24 @@ jobs:
             "platforms;android-33" \
             "ndk;25.2.9519653" || true
 
-      # Copy flat .py source modules and resources into the anonymity/ package.
-      # This keeps the desktop source files unchanged at root while
-      # giving Briefcase a proper package to bundle for Android.
+      # Copy flat .py source modules and resources into the src/anonymity package.
+      # This follows the standard Briefcase layout (src/app_name).
       - name: Prepare anonymity package
         run: |
+          mkdir -p src/anonymity/resources
           for f in detector.py recognizer.py enrollment.py tracker.py \
                    web_bridge.py gui.py main_android.py main_anonymity.py; do
-            cp "$f" "anonymity/$f"
+            cp "$f" "src/anonymity/$f"
           done
-          # Copy resources (icon, etc)
-          cp -r anonymity/resources anonymity/anonymity/resources || true
+          # Copy resources (icon, etc) — already created locally but ensure CI has them
+          cp anonymity/resources/anonymity.png src/anonymity/resources/anonymity.png || true
+          cp anonymity/__init__.py src/anonymity/__init__.py || true
+          cp anonymity/__main__.py src/anonymity/__main__.py || true
+          
           # Copy data and model files needed at runtime
-          cp -r models anonymity/models || true
-          cp -r data   anonymity/data   || true
-          cp -r anonymity_ui anonymity/anonymity_ui || true
+          cp -r models src/anonymity/models || true
+          cp -r data   src/anonymity/data   || true
+          cp -r anonymity_ui src/anonymity/anonymity_ui || true
 
       # Create the Android Gradle project
       - name: Briefcase Create

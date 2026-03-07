@@ -11,8 +11,8 @@ license = "Proprietary"
 formal_name = "Anonymity"
 description = "Real-time face anonymity for vloggers"
 long_description = "Selectively blurs unrecognized faces in real-time video."
-icon = "anonymity/resources/anonymity.png"
-sources = ["anonymity"]
+icon = "src/anonymity/resources/anonymity"
+sources = ["src/anonymity"]
 requires = [
     "numpy",
 ]
@@ -21,8 +21,8 @@ requires = [
 requires = [
     "numpy",
 ]
-icon = "anonymity/resources/anonymity.png"
-splash = "anonymity/resources/anonymity.png"
+icon = "src/anonymity/resources/anonymity"
+splash = "src/anonymity/resources/anonymity"
 splash_background_color = "#121212"
 
 # Android SDK / NDK settings
