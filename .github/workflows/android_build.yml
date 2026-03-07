@@ -48,10 +48,10 @@ jobs:
             "ndk;25.2.9519653" || true
 
       # The repository is now refactored into a standard Briefcase layout
-      # with the 'anonymity/' package at the root.
+      # with the 'anonymity/' package inside 'src/'.
       - name: Verify package structure
         run: |
-          ls -R anonymity
+          ls -R src/anonymity
           echo "Package structure verified."
 
       # Create the Android Gradle project
